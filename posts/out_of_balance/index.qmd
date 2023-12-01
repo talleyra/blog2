@@ -7,7 +7,7 @@ image: "image.jpg"
 format:
   html:
     code-fold: true
-
+    page-layout: full
 message: false
 warning: false
 execute:

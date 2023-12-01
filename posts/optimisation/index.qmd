@@ -1,0 +1,99 @@
+---
+title: "Optimisation"
+author: "Jakob Prossliner"
+date: "2023-11-25"
+categories: [optimisation]
+image: "image.jpg"
+format:
+  html:
+    code-fold: true
+    page-layout: full
+
+message: false
+warning: false
+execute:
+  freeze: auto
+---
+
+```{julia}
+
+#| output: false
+
+using JuMP
+using DataFrames
+using CSV
+using Plots
+using GLPK
+
+#cd("./posts/optimisation")
+
+prices_df = CSV.read("./data/austria_15_min_day_ahead_prices.csv", DataFrame)
+prices_df = rename!(prices_df, [:date, :price])
+
+price = prices_df.price
+max_charging_power = 20
+max_discharging_power = 20
+max_energy_level = 150
+initial_energy_level = 10  # adjust the initial energy 
+charging_efficiency = 0.95
+discharging_efficiency = 0.95
+
+function optimise_battery(
+  prices_df,
+  max_charging_power, max_discharging_power, 
+  max_energy_level, initial_energy_level, 
+  charging_efficiency, discharging_efficiency
+  )
+
+n = length(prices)
+model = Model(GLPK.Optimizer)
+
+@variable(model, 0 <= power_charging[i = 1:n] <= max_charging_power)
+@variable(model, 0 <= power_discharging[i = 1:n] <= max_discharging_power)
+@variable(model, 0 <= energy_in_battery[i = 1:n] <= max_energy_level)
+@constraint(model, energy_in_battery[1] == initial_energy_level)
+
+for i in 1:n
+    @constraint(model, energy_in_battery[i] == sum(power_charging[1:i] * charging_efficiency - power_discharging[1:i] * (1/discharging_efficiency)) + initial_energy_level)
+    @constraint(model, energy_in_battery[i] >= 0)
+    @constraint(model, energy_in_battery[i] <= max_energy_level)
+end
+
+# objective function
+@objective(model, Max, sum(price[i] * (power_discharging[i] - power_charging[i]) for i in 1:n))
+
+optimize!(model)
+
+opt_power_charging = value.(power_charging)
+opt_power_discharging = value.(power_discharging)
+opt_energy_in_battery = value.(energy_in_battery)
+
+insertcols!(prices_df, 3, :charging => opt_power_charging)
+insertcols!(prices_df, 4, :discharging => opt_power_discharging)
+insertcols!(prices_df, 5, :energy_in_battery => opt_energy_in_battery)
+
+return prices_df
+
+end
+```
+
+```{julia}
+
+CSV.write("./data/optimisation.csv", prices_df)
+```
+
+```{r}
+library(tidyverse)
+library(timetk)
+
+#setwd("./posts/optimisation/")
+
+df <- read_csv("./data/optimisation.csv")
+
+df %>%
+  pivot_longer(-date) %>%
+  timetk::plot_time_series(
+    date, value, name, .smooth = FALSE, .title = "Optimisation Result"
+  )
+
+```
