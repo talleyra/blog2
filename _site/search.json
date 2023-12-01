@@ -1,31 +1,10 @@
 [
   {
-    "objectID": "posts/post-with-code/index.html",
-    "href": "posts/post-with-code/index.html",
-    "title": "Out of balance",
-    "section": "",
-    "text": "Code\nlibrary(tidyverse)\nlibrary(ospowertrader)\nlibrary(lubridate)\nlibrary(timetk)\nlibrary(arrow)\n\n\n\nPicasso participation of Terna\n\n\nCode\napg_prices <- arrow::read_parquet(\"./data/apg_imbalance_prices.parquet\")\nterna_prices <- arrow::read_parquet(\"./data/terna_imbalance_prices.parquet\")\n\ncombined_prices <- apg_prices %>% \n  inner_join(terna_prices, by = c(\"df\" = \"reference_date\")) %>% \n  select(df, apg_price = ae_price, terna_price = unbalance_price_EURxMWh) \n\ncombined_prices %>% \n  pivot_longer(-df) %>% \n  timetk::plot_time_series(\n    df, value, name, .smooth = FALSE, .title = \"APG vs Terna (1)\"\n  )\n\n\n\n\n\n\nThis graph shows pretty well the impact of Terna’s participation to the Picasso platform. While large spikes, which were already common in the Austrian Control Area, were unheard of in Italy, after the 19th of July they became relatively common in Italy too.\n\n\nCode\ncombined_prices %>% \n  ggplot(aes(apg_price, terna_price))+\n  stat_binhex(bins = 50)+\n  scale_fill_gradient(low = \"blue\", high = \"red\")+\n  theme_bw()+\n  ggtitle(\"APG vs Terna (2)\")\n\n\n\n\n\nHere we can see there is a lot of covariance for extreme values, notice (!) the difference in scale. APG tends to present much extremer imbalance prices.\n\n\nCode\ncombined_prices %>% \n  filter(abs(apg_price) < 300 & abs(terna_price) < 300) %>% \n  ggplot()+\n  geom_histogram(aes(apg_price), alpha = 0.8, fill = \"red\", bins = 200)+\n  geom_histogram(aes(terna_price), alpha = 0.2, colour = \"lightblue\", bins = 200)+\n  theme_bw()+\n  ggtitle(label = \"APG vs Terna (distribution)\")\n\n\n\n\n\nVery surprising - no idea why the distribution is so different.\nUnder normal circumstances/normal price levels for imbalance prices - APG seems to have a much smoother distribution. Terna presents more of a multimodal distribution, peaking around zero and two more peaks - probably values set around the MGP/day-ahead price."
-  },
-  {
     "objectID": "posts/welcome/index.html",
     "href": "posts/welcome/index.html",
     "title": "Welcome To My Blog",
     "section": "",
     "text": "This is the first post in a Quarto blog. Welcome!\n\nSince this post doesn’t specify an explicit image, the first image in the post will be used in the listing page of posts."
-  },
-  {
-    "objectID": "index.html",
-    "href": "index.html",
-    "title": "powerpulse",
-    "section": "",
-    "text": "Out of balance\n\n\n\n\n\n\n\nimbalance\n\n\nanalysis\n\n\n\n\n\n\n\n\n\n\n\nNov 25, 2023\n\n\nJakob Prossliner\n\n\n\n\n\n\n  \n\n\n\n\nWelcome To My Blog\n\n\n\n\n\n\n\nnews\n\n\n\n\n\n\n\n\n\n\n\nNov 22, 2023\n\n\nTristan O’Malley\n\n\n\n\n\n\nNo matching items"
-  },
-  {
-    "objectID": "about.html",
-    "href": "about.html",
-    "title": "About",
-    "section": "",
-    "text": "About this blog"
   },
   {
     "objectID": "posts/out_of_balance/index.html",
@@ -54,5 +33,19 @@
     "title": "Out of balance",
     "section": "Exploring the volumetric link between APG and Terna",
     "text": "Exploring the volumetric link between APG and Terna\nHere we can compare volumes - we detect the accession of Terna to the platfrom and also a pause in their participation.\n\n\nCode\npicasso_vol_data<- picasso_df %>% select(dt, contains(\"vol\")) %>% \n  mutate(across(everything(), ~replace_na(., 0))) %>% \n  transmute(dt = dt, terna_vol = terna_pos_vol + terna_neg_vol, apg_vol = apg_pos_vol + apg_neg_vol) %>% \n  pivot_longer(-dt) %>% \n  drop_na() %>% \n  group_by(name) %>% \n  summarise_by_time(\n    .date_var = dt, .by = \"15 min\", value = mean(value)\n  ) %>% \n  ungroup() \n\npicasso_vol_data %>% \n  timetk::plot_time_series(dt, value, name, .smooth = FALSE, .title = \"Volumes called by each TSO\")\n\n\n\n\n\n\nThere seems to be a somewhat negative relationship between volumes. The two TSOs mirroring their volume calls on PICASSO.\n\n\nCode\npicasso_vol_data %>% \n  pivot_wider(names_from = name, values_from = value) %>% \n  filter(dt >= \"2023-10-25\") %>% \n  ggplot(aes(terna_vol, apg_vol))+\n  geom_point(alpha = 0.3)+\n  theme_bw()+\n  ggtitle(label = \"Volumes since end of October\")\n\n\n\n\n\n\nExample 26th of August 2023\nAn extreme day in terms of imbalance prices in Austria. We see too that volumes do somewhat correlate on this day. In particular there are 3 phases where Terna and APG call upon a similar level of volumes. For some periods there is a clear relationship between volumes and the imbalance price in Austria, however the very high imbalance prices from 8:00 to 8:30 fall out of this pattern.\n\n\nCode\nplot_volumes  <- picasso_df %>% \n  filter(date(qo) == \"2023-08-26\") %>% \n  select(dt, contains(\"vol\")) %>% \n  pivot_longer(-dt) %>% \n  timetk::plot_time_series(\n    dt, value, name, .smooth = FALSE,\n    .title = \"4s granularity - volumes data + imbalance prices /10\",\n    .interactive = FALSE\n  )\n\nimb_price <- picasso_df_aggr %>% \n  select(qo, apg_price) %>% \n  filter(date(qo) == \"2023-08-26\") %>% \n  mutate(apg_price = apg_price/10)\n\nplot_vol_price <- plot_volumes + \n  geom_point(imb_price, mapping = aes(qo, apg_price))\n\nplotly::ggplotly(plot_vol_price)"
+  },
+  {
+    "objectID": "index.html",
+    "href": "index.html",
+    "title": "powerpulse",
+    "section": "",
+    "text": "Out of balance\n\n\n\n\n\n\n\nimbalance\n\n\nanalysis\n\n\n\n\n\n\n\n\n\n\n\nNov 25, 2023\n\n\nJakob Prossliner\n\n\n\n\n\n\n  \n\n\n\n\nWelcome To My Blog\n\n\n\n\n\n\n\nnews\n\n\n\n\n\n\n\n\n\n\n\nNov 22, 2023\n\n\nTristan O’Malley\n\n\n\n\n\n\nNo matching items"
+  },
+  {
+    "objectID": "about.html",
+    "href": "about.html",
+    "title": "About",
+    "section": "",
+    "text": "About this blog"
   }
 ]
