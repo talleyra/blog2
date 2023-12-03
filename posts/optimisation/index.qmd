@@ -13,87 +13,255 @@ message: false
 warning: false
 execute:
   freeze: auto
+engine: knitr
 ---
 
+# Optimise a thermal power plant with Julia JuMP module
+
+First we download some price data, here I use Austrian price data for the month of November 2023. The main idea and structure of the code comes from the book "Virtual Power Plants and Electricity Markets" from Springer. Various power plant types are being optimised in the book, however it is not trivial to translate the code therein (written in GAMS which is not open source) to julia.
+
+In this example we work with a thermal plant which has several parameters: 
+
+- prices: a vector of prices we feed to the model 
+- variable cost: in our example we work with fixed variable cost, in a future project we might want to look at having a vector of variable costs, some kind of conversion of ttf, eua and powerplant efficiency to mwh. 
+- startup_cost: cost incurred by the plant when it is switched on 
+- shutdown_cost: cost of shutting down 
+- min_tech: minimal non zero production possibile (we don't want the powerplant to produce tiny amounts of power 
+- for many powerplants this is not even possible, in addition we don't want the powerplant to artificially avoid startup or shutdown costs by producing tiny amounts of power) 
+- ramping_up: possible ramping upwards 
+- ramping_down: possible down ramping 
+- startup_ramping: possible ramping when switching on (this should not be smaller than min_tech) 
+- shutdown_ramping: possible ramping when shutting down (also shouldn't be smaller than min_tech)
+
+
+
+Collapse to see function we are running
+
 ```{julia}
 
-#| output: false
+#| eval: false
 
-using JuMP
-using DataFrames
-using CSV
-using Plots
 using GLPK
+using JuMP
+using CSV
+using DataFrames
 
-#cd("./posts/optimisation")
+function thermalplant(prices, variable_cost, startup_cost, shutdown_cost, min_tech, ramping_up, ramping_down, startup_ramping, shutdown_ramping)
 
-prices_df = CSV.read("./data/austria_15_min_day_ahead_prices.csv", DataFrame)
-prices_df = rename!(prices_df, [:date, :price])
+    n = length(prices)
 
-price = prices_df.price
-max_charging_power = 20
-max_discharging_power = 20
-max_energy_level = 150
-initial_energy_level = 10  # adjust the initial energy 
-charging_efficiency = 0.95
-discharging_efficiency = 0.95
+    model = Model(GLPK.Optimizer)
 
-function optimise_battery(
-  prices_df,
-  max_charging_power, max_discharging_power, 
-  max_energy_level, initial_energy_level, 
-  charging_efficiency, discharging_efficiency
-  )
+    @variable(model, running[1:n], Bin)
+    @variable(model, p[1:n] >= 0)
 
-n = length(prices)
-model = Model(GLPK.Optimizer)
+    # seems to work
+    for i in 1:n
+        @constraint(model, p[i] <= capacity * running[i]) 
+        @constraint(model, p[i] >= min_tech * running[i])
+    end
 
-@variable(model, 0 <= power_charging[i = 1:n] <= max_charging_power)
-@variable(model, 0 <= power_discharging[i = 1:n] <= max_discharging_power)
-@variable(model, 0 <= energy_in_battery[i = 1:n] <= max_energy_level)
-@constraint(model, energy_in_battery[1] == initial_energy_level)
+    @variable(model, startup[1:n], Bin)
+    @variable(model, shutdown[1:n], Bin)
 
-for i in 1:n
-    @constraint(model, energy_in_battery[i] == sum(power_charging[1:i] * charging_efficiency - power_discharging[1:i] * (1/discharging_efficiency)) + initial_energy_level)
-    @constraint(model, energy_in_battery[i] >= 0)
-    @constraint(model, energy_in_battery[i] <= max_energy_level)
-end
 
-# objective function
-@objective(model, Max, sum(price[i] * (power_discharging[i] - power_charging[i]) for i in 1:n))
 
-optimize!(model)
+    for i in 2:n
+        # 0 if running; -1 if shutdown, 1 if swich on
+        @constraint(model, running[i] - running[i - 1] == startup[i] - shutdown[i])
+        @constraint(model, startup[i] + shutdown[i] <= 1)
 
-opt_power_charging = value.(power_charging)
-opt_power_discharging = value.(power_discharging)
-opt_energy_in_battery = value.(energy_in_battery)
+        @constraint(model, p[i] - p[i - 1] <= (ramping_up * running[i - 1]) + (startup_ramping * startup[i]))
+        @constraint(model, p[i - 1] - p[i] <= (ramping_down * running[i - 1]) + (shutdown_ramping * shutdown[i]))
 
-insertcols!(prices_df, 3, :charging => opt_power_charging)
-insertcols!(prices_df, 4, :discharging => opt_power_discharging)
-insertcols!(prices_df, 5, :energy_in_battery => opt_energy_in_battery)
+    end
 
-return prices_df
+    @objective(
+        model, Max,
+        sum(
+            (prices[i] * p[i]) - (variable_cost * p[i]) - (startup_cost * startup[i]) - (shutdown_cost * shutdown[i])
+            for i in 1:n
+        )
+    )
+
+    optimize!(model)
+
+    return value.(p)
 
 end
+
+
+#capacity = 10
+#variable_cost = 130
+#startup_cost = 4000
+#shutdown_cost = 3000
+#min_tech      = 3
+#ramping_up = 0.3
+#ramping_down = 0.4
+#startup_ramping = 3.3
+#shutdown_ramping = 3.4
+#
+#
+#prices_df = CSV.read("./data/aus15minprices.csv", DataFrame)
+#prices_df = rename!(prices_df, [:date, :price])
+#
+#plant1 = thermalplant(
+#  prices_df.price,
+#  130,
+#  4000,
+#  3000,
+#  3,
+#  1,
+#  1,
+#  4,
+#  4
+#)
+#
+
+
+
 ```
 
-```{julia}
+We create some possible values for the power plant and run the simulation, however we're going to call the function via python, to make it easier
 
-CSV.write("./data/optimisation.csv", prices_df)
+```{python}
+#| eval: false
+
+import julia
+from julia import Main
+import os
+import pandas as pd
+
+os.getcwd()
+Main.include("termalplant.jl")
+
+prices = pd.read_csv("./posts/optimisation/data/aus15minprices.csv")
+prices.columns = ['date', 'price']
+
+
+capacity = 10
+variable_cost = 90
+startup_cost = 4000
+shutdown_cost = 3000
+min_tech      = 3
+ramping_up = 0.3
+ramping_down = 0.4
+startup_ramping = 3.3
+shutdown_ramping = 3.4
+
+price_list = prices['price'].tolist()
+
+simul1 = Main.thermalplant(
+    price_list,
+    capacity,
+    variable_cost,
+    startup_cost,
+    shutdown_cost,
+    min_tech,
+    ramping_up,
+    ramping_down,
+    startup_ramping,
+    shutdown_ramping
+    )
+
+prices["simul1"] = simu1
+
+# lets keep all as it was and just alter the min tech downwards to 2 MW
+
+simul2 = Main.thermalplant(
+    price_list,
+    10, #capacity
+    90, #variable_cost
+    4000, #startup_cost
+    3000, #shutdown_cost
+    2, #min_tech
+    0.3, #ramping_up
+    0.4, #ramping_down
+    3.3, #startup_ramping 
+    3.4, #shutdown_ramping
+    )
+
+prices["simul2"] = simul2
+
+# lets have much higher ramping
+
+simul3 = Main.thermalplant(
+    price_list,
+    10, #capacity
+    90, #variable_cost
+    4000, #startup_cost
+    3000, #shutdown_cost
+    3, #min_tech
+    2, #ramping_up
+    2, #ramping_down
+    3.3, #startup_ramping 
+    3.4, #shutdown_ramping
+    )
+
+prices["simul3"] = simul3
+
+prices.to_csv("./data/simuls.csv")
+
 ```
+
+## Analyse results
+
+As specified in the code above we have 3 simulations: 
+
+- simul1 is our baseline, 
+- simul2 has a lower min_tech value 
+- simul3 has the ability to ramp more
+
+Let's visualise the optimisation results.
 
 ```{r}
 library(tidyverse)
 library(timetk)
 
-#setwd("./posts/optimisation/")
+data <- read_csv("./data/simuls.csv") %>% 
+  select(-1)
 
-df <- read_csv("./data/optimisation.csv")
 
-df %>%
-  pivot_longer(-date) %>%
+data %>%
+  pivot_longer(-date) %>% 
+  mutate(type = if_else(name == "price", "price", "simul")) %>% 
+  group_by(type) %>% 
   timetk::plot_time_series(
-    date, value, name, .smooth = FALSE, .title = "Optimisation Result"
-  )
+  date, value, name, .smooth = FALSE, .title = "Quarthourly Austrian day ahead prices (ENTSO-E)"
+)
 
 ```
+
+# Lets calculate the outcome for each simulation
+
+```{r}
+
+variable_cost = 90
+start_up_cost = 4000
+shut_down_cost = 3000
+
+simul = "simul1"
+
+calculate_profit <- function(simul){
+  revenue       = sum(data[[simul]] * data$price)
+  variable_cost = sum(data[[simul]] * variable_cost)
+  start_up_cost = sum(lag(data[[simul]]) == 0 & data[[simul]] != 0, na.rm = TRUE) * start_up_cost
+  shutdown_cost = sum(lag(data[[simul]]) != 0 & data[[simul]] == 0, na.rm = TRUE) * shut_down_cost
+  
+  return(revenue - variable_cost - start_up_cost - shut_down_cost)
+}
+
+tibble(
+  profit_simul1 = calculate_profit("simul1"),
+  profit_simul2 = calculate_profit("simul2"),
+  profit_simul3 = calculate_profit("simul3")
+) %>% 
+  pivot_longer(where(is.numeric)) %>% 
+  mutate(relative = value / min(value)) %>% 
+  mutate(across(where(is.numeric), ~round(., digits = 3)))
+
+```
+
+For me this seems a little unexpected - i would have thought the lower min tech would contribute to being able to allow for longer periods in the market at low production tolerating lower or negative margins but avoiding a shutdown. The most profitable (granted only by a little) is the power plant with the least tight ramping rates.
+The relative values show however that the ramping rates lead to a 6% increase in revenue.
+
