@@ -119,4 +119,103 @@ price_table %>%
   knitr::kable()
 
 ```
+```{r}
+
+market_strips <- price_table %>% 
+  filter(!is.na(german_power_base)) %>%
+  pull(marketStrip)
+
+
+market_strips[1]
+
+```
+
+Market strip we want to analyse historical data for.
+
+
+Unfortunately EUA is missing for a long period of time, so I will use the first present value to interpolate
+the series. This will only move spark and dark downwards.
+
+What is very interesting are the spreads during August 2022. There seems to be a moment where spark spreads become highly profitable for a short period of time.
+Up to the 23rd of August we see that spark spread move slightly over zero, suddenly they spike for the Jan24 marketStrip.
+Also interesting is how profitable dark spreads seem to be (of course the parameters we used estimating the efficiency play a role or the quality of the coal in general,
+maybe 0.1228 tons for a thermal MWh is too optimistic)
+
+```{r}
+historical_data <- df %>% 
+  filter(marketStrip == market_strips[1]) %>% 
+  mutate(price_data = map(marketId, ~ice_historical_data(marketId = .x, span = 3)))
+
+historical_data %>% 
+  unnest(price_data) %>% 
+  select(desc, date, price) %>% 
+  pivot_wider(names_from = desc, values_from = price) %>%
+  fill(eua, .direction = "downup") %>% 
+  mutate(
+    spark = spread(ttf, 0.40, german_power_base),
+    dark  = spread(api2 * 0.1228, 0.37, german_power_base),
+    spark_ccgt = spread(ttf, 0.6, german_power_base),
+    clean_spark = clean_spread(ttf, 0.40, german_power_base, 0.2, eua),
+    clean_dark = clean_spread(api2 * 0.1228, 0.37, german_power_base, 0.34, eua),
+    clean_spark_ccgt = clean_spread(ttf, 0.6, german_power_base, 0.2, eua)
+    ) %>% 
+  filter(!is.na(german_power_base)) %>% 
+  select(date, spark, spark_ccgt, dark, starts_with("clean")) %>% 
+  pivot_longer(-date) %>% 
+  timetk::plot_time_series(date, value, name, .smooth = FALSE, .y_intercept = 0, .title = market_strips[1])
+```
+
+Plot just the input prices:
+
+```{r}
+historical_data %>% 
+  unnest(price_data) %>% 
+  select(date, desc, price) %>% 
+  timetk::plot_time_series(
+    date, price, desc, .smooth = FALSE, .title = market_strips[1]
+  )
+```
+
+
+
+```{r}
+## define a function
+
+plot_spreads <- function(market_strip){
+  
+  historical_data <- df %>% 
+  filter(marketStrip == market_strips[market_strip]) %>% 
+  mutate(price_data = map(marketId, ~ice_historical_data(marketId = .x, span = 3)))
+
+historical_data %>% 
+  unnest(price_data) %>% 
+  select(desc, date, price) %>% 
+  pivot_wider(names_from = desc, values_from = price) %>%
+  #fill(eua, .direction = "downup") %>% 
+  mutate(
+    spark = spread(ttf, 0.40, german_power_base),
+    dark  = spread(api2 * 0.1228, 0.37, german_power_base),
+    spark_ccgt = spread(ttf, 0.6, german_power_base),
+    clean_spark = clean_spread(ttf, 0.40, german_power_base, 0.2, eua),
+    clean_dark = clean_spread(api2 * 0.1228, 0.37, german_power_base, 0.34, eua),
+    clean_spark_ccgt = clean_spread(ttf, 0.6, german_power_base, 0.2, eua)
+    ) %>% 
+  filter(!is.na(german_power_base)) %>% 
+  select(date, spark, spark_ccgt, dark, starts_with("clean")) %>% 
+  pivot_longer(-date) %>% 
+  timetk::plot_time_series(date, value, name, .smooth = FALSE, .y_intercept = 0, .title = market_strips[market_strip])
+
+}
+```
+
+Let's also analyse the future prices for March 24.
+For other strips there are no EUA prices. 
+
+Interestingly there is a more complete EUA price curve. It is very interesting to see how much the EUA component takes out of the profit margins of a Gas or Coal Power plant.
+
+```{r}
+# run for second strip
+plot_spreads(4)
+```
+
 
