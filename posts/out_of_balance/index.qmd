@@ -11,7 +11,7 @@ format:
 message: false
 warning: false
 execute:
-  freeze: auto
+  freeze: true
 ---
 
 ```{r}

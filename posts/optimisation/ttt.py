@@ -1,3 +1,4 @@
+
 import julia
 from julia import Main
 import os
@@ -9,8 +10,9 @@ Main.include("./posts/optimisation/termalplant.jl")
 prices = pd.read_csv("./posts/optimisation/data/aus15minprices.csv")
 prices.columns = ['date', 'price']
 
+
 capacity = 10
-variable_cost = 130
+variable_cost = 90
 startup_cost = 4000
 shutdown_cost = 3000
 min_tech      = 3
@@ -20,7 +22,8 @@ startup_ramping = 3.3
 shutdown_ramping = 3.4
 
 price_list = prices['price'].tolist()
-opti = Main.thermalplant(
+
+simul1 = Main.thermalplant(
     price_list,
     capacity,
     variable_cost,
@@ -33,22 +36,40 @@ opti = Main.thermalplant(
     shutdown_ramping
     )
 
+prices["simul1"] = simul1
 
-prices['optimal'] = opti
+# lets keep all as it was and just alter the min tech downwards to 2 MW
 
-from plotnine import ggplot, aes, geom_line
-import pandas as pd
+simul2 = Main.thermalplant(
+    price_list,
+    10, #capacity
+    90, #variable_cost
+    4000, #startup_cost
+    3000, #shutdown_cost
+    2, #min_tech
+    0.3, #ramping_up
+    0.4, #ramping_down
+    3.3, #startup_ramping 
+    3.4, #shutdown_ramping
+    )
 
-# Assuming you have a DataFrame named 'prices' with columns 'date', 'price', and 'program'
+prices["simul2"] = simul2
 
-# Sample DataFrame creation (replace this with your DataFrame)
-# Plotting with plotnine
-(
-    ggplot(prices)
-    + aes(x='date', y='price')
-    + geom_line(color='blue')  # Line for 'price'
-    + aes(x = 'date', y='opti')
-    + geom_line(color='red')  # Line for 'program'
-)
+# lets have much higher ramping
 
+simul3 = Main.thermalplant(
+    price_list,
+    10, #capacity
+    90, #variable_cost
+    4000, #startup_cost
+    3000, #shutdown_cost
+    3, #min_tech
+    2, #ramping_up
+    2, #ramping_down
+    3.3, #startup_ramping 
+    3.4, #shutdown_ramping
+    )
 
+prices["simul3"] = simul3
+
+prices.to_csv("./posts/optimisation/data/simuls.csv")

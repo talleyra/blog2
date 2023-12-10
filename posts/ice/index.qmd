@@ -1,0 +1,122 @@
+---
+title: "Cold as ICE"
+author: "Jakob Prossliner"
+date: "2023-12-10"
+categories: [futures]
+image: "image.jpg"
+format:
+  html:
+    code-fold: true
+    page-layout: full
+
+message: false
+warning: false
+execute:
+  freeze: auto
+engine: knitr
+---
+
+# ICE data
+
+Recently I managed to understand the way the (unofficial) API of the Intercontinental exchange works,
+giving access to very interesting futures data.
+This way we can make some interesting analysis - lets start by simply calculating dark, spark spreads.
+
+```{r}
+library(tidyverse)
+library(ospowertrader)
+
+# get the data
+products <- list(
+  api2_coal = list(
+    productId = 517,
+    hubId     = 681,
+    desc = "api2"
+  ),
+  ttf_gas = list(
+    productId = 4331,
+    hubId     = 7979,
+    desc = "ttf"
+  ),
+  brent_crude = list(
+    productId = 254,
+    hubId     = 403,
+    desc = "brent"
+  ),
+  german_power = list(
+    productId = 19032,
+    hubId     = 21971,
+    desc = "german_power_base"
+  ),
+  eua = list(
+    productId = 390,
+    hubId     = 564,
+    desc = "eua"
+  )
+)
+
+df <- tibble(products) %>% 
+  unnest_wider(products)
+
+
+df <- df %>% 
+  mutate(data = map2(.x = productId, .y = hubId, ~ice_futures_list(productId = .x, hubId = .y))) %>% 
+  unnest(data)
+
+
+price_table <- df %>%
+  select(desc, marketStrip, lastPrice) %>% 
+  pivot_wider(names_from = desc, values_from = lastPrice)
+
+knitr::kable(price_table)
+
+```
+
+So we can see there are different market strips to consider. Unfortunately we cannot determine the value for all spreads,
+since not all last prices are published for each product.
+
+#### Conversion table:
+
+##### Assumptions:
+
+- coal plant:
+  - 1 MWh of thermal energy in 0.1228 tonnes of coal
+  - coal plant efficiency is 37 %
+  - with a CO2 output of 0.34 tonnes
+
+- single cycle gas:
+  - 40% efficiency 
+  - 0.2 tonnes of CO2 output
+
+- combined cycle (ccgt): 
+  - 60% efficiency 
+  - with 0.2 tonnes of CO2 output
+
+```{r}
+
+spread <- function(fuel_cost, efficiency, power){
+  spark_spread <- power - (fuel_cost/efficiency)
+  # spred         # revenue # cost
+  return(spark_spread)
+}
+
+clean_spread <- function(fuel_cost, efficiency, power, co2_mwh, co2_price){
+  clean_spread <- power - ((fuel_cost / efficiency) + co2_mwh * co2_price)
+  return(clean_spread)
+}
+
+price_table %>% 
+  mutate(
+    spark = spread(ttf, 0.40, german_power_base),
+    dark  = spread(api2 * 0.1228, 0.37, german_power_base),
+    spark_ccgt = spread(ttf, 0.6, german_power_base),
+    clean_spark = clean_spread(ttf, 0.40, german_power_base, 0.2, eua),
+    clean_dark = clean_spread(api2 * 0.1228, 0.37, german_power_base, 0.34, eua),
+    clean_spark_ccgt = clean_spread(ttf, 0.6, german_power_base, 0.2, eua)
+    ) %>% 
+  filter(!is.na(german_power_base)) %>% 
+  mutate(across(where(is.numeric), ~round(., digits = 2))) %>% 
+  knitr::kable()
+
+```
+
