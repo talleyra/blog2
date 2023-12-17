@@ -1,0 +1,318 @@
+---
+title: "Load forecasting"
+author: "Jakob Prossliner"
+date: "2023-12-17"
+categories: [load forecasting]
+image: "image.jpg"
+format:
+  html:
+    code-fold: true
+    page-layout: full
+
+message: false
+warning: false
+execute:
+  freeze: auto
+engine: knitr
+---
+
+
+# Load forecasting with GAMs
+
+Try to forecast Austrian Load (data sourced from ENTSOE).
+
+## Approach
+- download meteorological data from openmeteo API
+- weigh meteorological data by population in Austrian cities
+- exclude holidays from analysis
+- forecast on rolling origin resamples without weighting obeservations
+- forecast on rolling origin resamples with weighing last obersavtions more heavily and assess performance gain
+
+```{r}
+
+library(tidyverse)
+library(timetk)
+library(tidymodels)
+library(openmeteo)
+library(lubridate)
+library(future)
+
+austria <- read_csv("./data/at_load.csv") %>% 
+  rename(time = 1, actual_load = 2)
+
+## build syntetic index of meteo data
+
+austria %>% 
+  mutate(time = force_tz(time, tzone = "CET")) %>% 
+  timetk::plot_time_series(time, actual_load, .smooth = FALSE, .title = "austria load")
+```
+
+```{r}
+cities <- tribble(
+  ~ city, ~lat, ~long, ~population,
+  "Vienna",	48.2083,	16.3725,	1973403,
+  "Graz",	47.0708,	15.4386,	289440,
+  "Linz",	48.3058,	14.2864,	210165,
+  "Salzburg",	47.8000,	13.0450,	155021,
+  "Innsbruck",	47.2683,	11.3933,	131961,
+  "Klagenfurt",	46.6167,	14.3000,	101403
+) %>% 
+  mutate(ratio = population/sum(population))
+
+# feature engineer
+
+# need temperature, direct radiation, holidays, 
+
+meteodata <- cities %>%
+  mutate(
+    data = pmap(., function(lat, long, ...) {
+      weather_history(
+        location = c(lat, long),
+        hourly = c("temperature_2m", "direct_radiation", "relative_humidity_2m"),
+        start = min(date(austria$time)),
+        end = max(date(austria$time)),
+        timezone = "UTC"
+      )
+    })
+  ) %>% 
+  unnest(data)
+
+
+meteo_weighted <- meteodata %>% 
+  select(datetime, hourly_direct_radiation, hourly_temperature_2m, hourly_relative_humidity_2m, city, ratio) %>% 
+  pivot_longer(-c(datetime, city, ratio)) %>% 
+  group_by(datetime, name) %>% 
+  summarise(
+    value = weighted.mean(x = value, w = ratio)
+  )
+
+# population weighted
+
+meteo_population_weighted <- meteo_weighted %>% 
+  pivot_wider(names_from = name, values_from = value)
+  
+
+austria_comb <- austria %>% 
+  left_join(meteo_population_weighted, by = c("time" = "datetime")) %>% 
+  fill(c(where(is.numeric)),.direction = "down")
+
+holidays <- tribble(
+  ~ date, ~description,
+  "01 January 2022", "New Year's Day",
+  "06 January 2022", "Epiphany",
+  "18 April 2022", "Easter Monday",
+  "01 May 2022", "Labour Day",
+  "26 May 2022", "Ascension Day",
+  "06 June 2022", "Whit Monday",
+  "15 August 2022", "Assumption of the Virgin Mary",
+  "26 October 2022", "Austrian National Holiday",
+  "01 November 2022", "All Saints' Day",
+  "08 December 2022", "Immaculate Conception",
+  "24 December 2022", "Christmas Eve",
+  "25 December 2022", "Christmas Day",
+  "26 December 2022", "Boxing Day",
+  "31 December 2022", "New Year",
+  "01 January 2023", "New Year's Day",
+  "06 January 2023", "Epiphany",
+  "10 April 2023", "Easter Monday",
+  "01 May 2023", "Labour Day",
+  "18 May 2023", "Ascension Day",
+  "29 May 2023", "Whit Monday",
+  "15 August 2023", "Assumption of the Virgin Mary",
+  "26 October 2023", "Austrian National Holiday",
+  "01 November 2023", "All Saints' Day",
+  "08 December 2023", "Immaculate Conception",
+  "24 December 2023", "Christmas Eve",
+  "25 December 2023", "Christmas Day",
+  "26 December 2023", "Boxing Day",
+  "31 December 2023", "New Year"
+) %>% 
+  mutate(date = dmy(date))
+
+daily_tbl<- austria_comb %>% 
+  group_by(date = date(time)) %>% 
+  summarise(across(where(is.numeric), mean)) %>%
+  mutate(
+    dow = wday(date, label = TRUE), 
+    dow = if_else(dow %in% c("Tue", "Thu", "Wed"), "trittico", dow),
+    dow = as.character(dow),
+    dow = if_else(date %in% holidays$date, "holiday", dow)
+    ) 
+
+p1 <- daily_tbl %>% 
+  ggplot(aes(actual_load, hourly_temperature_2m, color = as.factor(dow)))+
+  geom_point()+
+  coord_flip()+
+  theme_bw()+
+  ggtitle(label = "population weighted temperature vs load")
+
+plotly::ggplotly(p1)
+
+```
+
+
+
+```{r}
+
+p2 <- daily_tbl %>% 
+  ggplot(aes(actual_load, hourly_direct_radiation, color = as.factor(dow)))+
+  geom_point()+
+  coord_flip()+
+  theme_bw() + 
+  ggtitle(label = "population weighted solar radiation vs load")
+
+
+plotly::ggplotly(p2)
+
+```
+```{r}
+
+p3 <- daily_tbl %>% 
+  ggplot(aes(actual_load, hourly_relative_humidity_2m, color = as.factor(dow)))+
+  geom_point()+
+  coord_flip()+
+  theme_bw() +
+  ggtitle(label = "population weighted humidity vs load")
+
+
+plotly::ggplotly(p3)
+
+```
+
+### Comment
+
+From the last plots we can see that temperature and solar radiation are strong predictors of the load.
+There is no big reaction to very high temperatures in Austria, differently from what i would have expected.
+Solar radiation also being a strong predictor suggests there is load masking going on to some degree.
+
+```{r}
+library(mgcv)
+
+# initial test
+
+austria_tbl <- austria_comb %>% 
+  mutate(
+    dow = wday(time, label = TRUE), 
+    dow = if_else(dow %in% c("Tue", "Thu", "Wed"), "trittico", dow),
+    dow = as.character(dow),
+    dow = if_else(date(time) %in% holidays$date, "holiday", dow)
+    ) %>% 
+  mutate(tt = format(time, format = "%H:%M")) %>% 
+  mutate(tt = str_c(dow, "_", tt)) %>% 
+  ### log
+  mutate(actual_load = log(actual_load)) %>% 
+  arrange(time)
+  
+
+# take a smaller subsample only considering the last periods
+# exclude holidays
+
+subsample_tbl <- austria_tbl %>% 
+  filter(time >= today() - 150) %>% 
+  filter(!str_detect(tt, "holiday"))
+
+
+
+with_lag_tbl <- subsample_tbl %>%
+  group_by(tt) %>% 
+  mutate(actual_load_lag = lag(actual_load)) %>% 
+  ungroup() %>% 
+  drop_na()
+
+
+resamples_tbl <- with_lag_tbl %>% 
+  rolling_origin(initial = 80*4*24, assess = 24*4, skip = 24*4)
+
+
+plan(multisession, workers = 4)
+
+resamples_forecasts_tbl <- resamples_tbl %>%
+  mutate(forecast = furrr::future_map(.progress = TRUE, .x = splits, .f = ~ {
+    gam(
+      formula = actual_load ~ s(hourly_temperature_2m) + s(hourly_direct_radiation) + s(hourly_relative_humidity_2m) + tt,
+      data = analysis(.x)
+    ) %>% 
+      predict(assessment(.x)) %>% 
+      tibble(forecast = .) %>% 
+      bind_cols(assessment(.x))
+  })) 
+
+
+plan(sequential)
+
+forecast_tbl <- resamples_forecasts_tbl %>% 
+  select(id, forecast) %>% 
+  unnest(forecast) %>% 
+  select(id, time, actual_load, forecast) %>% 
+  mutate(across(c(actual_load, forecast), ~ exp(.))) 
+
+
+p_forecasts <- forecast_tbl %>% 
+  timetk::plot_time_series(
+    time, actual_load, .smooth = FALSE, .interactive = FALSE
+  ) + 
+  geom_line(aes(time, forecast, colour = id))+
+  ggtitle("forecasts without weights")
+
+plotly::ggplotly(p_forecasts)
+
+```
+
+```{r}
+
+forecast_tbl %>% 
+  filter(!is.infinite(forecast)) %>% 
+  yardstick::mape(truth = actual_load, estimate = forecast)
+
+
+```
+
+```{r}
+# retry with weights
+
+plan(multisession, workers = 4)
+
+resamples_forecasts_weights_tbl <- resamples_tbl %>%
+  mutate(forecast = furrr::future_map(.progress = TRUE, .x = splits, .f = ~ {
+    gam(
+      formula = actual_load ~ s(hourly_temperature_2m) + s(hourly_direct_radiation) + s(hourly_relative_humidity_2m) + tt,
+      data = analysis(.x),
+      weights = c(rep(0.4, nrow(analysis(.x)) - 24*4*7), rep(1, 24*4*7))
+    ) %>% 
+      predict(assessment(.x)) %>% 
+      tibble(forecast = .) %>% 
+      bind_cols(assessment(.x))
+  })) 
+
+plan(sequential)
+
+forecast_weights_tbl <- resamples_forecasts_weights_tbl %>% 
+  select(id, forecast) %>% 
+  unnest(forecast) %>% 
+  select(id, time, actual_load, forecast) %>% 
+  mutate(across(c(actual_load, forecast), ~ exp(.))) 
+
+p_forecasts_weights <- forecast_weights_tbl %>% 
+  timetk::plot_time_series(
+    time, actual_load, .smooth = FALSE, .interactive = FALSE
+  ) + 
+  geom_line(aes(time, forecast, colour = id))+
+  ggtitle(label = "forecasts with weights")
+
+plotly::ggplotly(p_forecasts_weights)
+
+```
+
+```{r}
+forecast_weights_tbl %>% 
+  yardstick::mape(truth = actual_load, estimate = forecast)
+```
+
+### Conclusion
+
+- Weighing last observations more heavily boosts performance.
+- GAMs seems to work quite well on load data.
+- Problems:
+  - the algorithm seem to have problems adjusting to the daylight saving time switch at the end of October
+  - Should make an analysis to predict load on holidays. This is however very difficult being such rare and specific occasions.
+

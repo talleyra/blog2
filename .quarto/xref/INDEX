@@ -19,5 +19,8 @@
   },
   "posts/ice/index.qmd": {
     "index.html": "6bf385f8"
+  },
+  "posts/load_forecasting/index.qmd": {
+    "index.html": "684fe84e"
   }
 }
