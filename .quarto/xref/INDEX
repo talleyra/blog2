@@ -22,5 +22,8 @@
   },
   "posts/load_forecasting/index.qmd": {
     "index.html": "684fe84e"
+  },
+  "posts/load_forecasting_note/index.qmd": {
+    "index.html": "cb471e26"
   }
 }

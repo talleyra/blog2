@@ -2,6 +2,7 @@
   {
     "listing": "/index.html",
     "items": [
+      "/posts/load_forecasting_note/index.html",
       "/posts/load_forecasting/index.html",
       "/posts/ice/index.html",
       "/posts/out_of_balance/index.html",

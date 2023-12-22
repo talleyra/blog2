@@ -1,0 +1,122 @@
+---
+title: "Load forecasting footnote"
+author: "Jakob Prossliner"
+date: "2023-12-22"
+categories: [load forecasting]
+image: "../load_forecasting/image.jpg"
+format:
+  html:
+    code-fold: true
+    page-layout: full
+
+message: false
+warning: false
+execute:
+  freeze: auto
+engine: knitr
+---
+
+# Load forecasting with gam foot note
+
+In the last post I showed how forecasting with GAM yielded some quite satisfying results.
+I want to show some other discoveries I made recently. This time with much less data in order to have faster fitting times.
+
+```{r}
+library(tidyverse)
+library(qgam)
+library(mgcv)
+library(tidymodels)
+
+df <- read_csv("./data.csv")
+
+# take a subsample
+
+df <- df %>% slice_tail(n = 3000) %>% 
+  mutate(actual_load = exp(actual_load))
+
+timetk::plot_time_series(
+  df, time, actual_load, .smooth = FALSE, .title = "austria load"
+)
+
+```
+
+Lets fit the GAM on 80 % of the data and forecast on the rest.
+We can extract the terms of the model upon forecasting, so we can see which variable had which effect.
+
+```{r}
+
+splits <- initial_time_split(df, prop = 0.8)
+
+mod <- gam(formula = actual_load ~ tt + s(actual_load_lag) + s(hourly_temperature_2m) + s(hourly_direct_radiation) + s(hourly_relative_humidity_2m), data = training(splits))
+
+
+forecast_tbl <- predict.gam(mod, testing(splits), type = "terms") %>% 
+  as_tibble() %>% 
+  janitor::clean_names() %>% 
+  bind_cols(testing(splits) %>% select(time, actual_load))
+
+# add the intercept to all terms
+forecast_tbl %>% 
+  mutate(across(c(tt, s_hourly_temperature_2m, s_hourly_direct_radiation, s_hourly_relative_humidity_2m, s_actual_load_lag), ~ . + mod$coefficients['(Intercept)'])) %>% 
+  pivot_longer(-time) %>% 
+  timetk::plot_time_series(
+    time, value, name, .smooth = FALSE,
+    .title = "terms"
+  )
+
+
+```
+In the plot above we can see how a gam forecast is composed. In my opinion this is a great way to make the forecasts more interpretable.
+For example on the 13th of december you can observe that the lagged value of actual_load will try to replicate the anomaly it has seen on the 12th december.
+Working with such forecasts we can somehow isolate the effects of variables and correct effects like the one mentioned.
+
+So lets just see the whole forecast:
+
+```{r}
+
+tt_tbl <- predict(mod, testing(splits)) %>% 
+  tibble(forecast = .) %>% 
+  bind_cols(testing(splits)) %>% 
+  select(time, actual_load, forecast) 
+
+tt_tbl %>% 
+  pivot_longer(-time) %>% 
+  timetk::plot_time_series(time, value, name, .smooth = FALSE, .title = "forecast")
+```
+
+```{r}
+yardstick::mape(tt_tbl, truth = actual_load, estimate = forecast)
+```
+
+
+Another interesting feature is quantile regression with gam, this way we can create different scenarios, trying to forecast a specfic quantile of the distribution.
+
+```{r}
+qfore_05 <- qgam(form = actual_load ~ tt + s(actual_load_lag) + s(hourly_temperature_2m) + s(hourly_direct_radiation) + s(hourly_relative_humidity_2m), data = training(splits), qu = 0.5, lsig = 0.1)
+qfore_01 <- qgam(form = actual_load ~ tt + s(actual_load_lag) + s(hourly_temperature_2m) + s(hourly_direct_radiation) + s(hourly_relative_humidity_2m), data = training(splits), qu = 0.1, lsig = 0.1)
+qfore_09 <- qgam(form = actual_load ~ tt + s(actual_load_lag) + s(hourly_temperature_2m) + s(hourly_direct_radiation) + s(hourly_relative_humidity_2m), data = training(splits), qu = 0.9, lsig = 0.1)
+
+
+scenarios_tbl <- testing(splits) %>% 
+  mutate(
+    fore_05 = predict(qfore_05, testing(splits)),
+    fore_01 = predict(qfore_01, testing(splits)),
+    fore_09 = predict(qfore_09, testing(splits))
+  ) %>% 
+  select(time, actual_load, contains("fore")) 
+
+scenarios_tbl %>% 
+  pivot_longer(-time) %>% 
+  timetk::plot_time_series(
+    time, value, name, .smooth = FALSE, .title = "scenarios"
+  )
+
+```
+
+```{r}
+scenarios_tbl %>% 
+  pivot_longer(starts_with("fore")) %>% 
+  group_by(name) %>% 
+  mape(truth = actual_load, estimate = value)
+```
+
